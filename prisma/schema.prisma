@@ -1,8 +1,5 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// OutPipe - Schema do Banco de Dados
+// SaaS B2B de Automação de Prospecção com IA
 
 generator client {
   provider = "prisma-client"
@@ -12,4 +9,374 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════
+// AUTENTICAÇÃO E MULTI-TENANCY
+// ═══════════════════════════════════════════
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  plan      Plan     @default(STARTER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users         User[]
+  leads         Lead[]
+  campaigns     Campaign[]
+  emailAccounts EmailAccount[]
+  diagnostics   Diagnostic[]
+  proposals     Proposal[]
+}
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  name           String
+  role           UserRole     @default(SDR)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  campaigns    Campaign[]
+  interactions Interaction[]
+
+  @@index([organizationId])
+}
+
+enum Plan {
+  STARTER
+  GROWTH
+  SCALE
+  ENTERPRISE
+}
+
+enum UserRole {
+  ADMIN
+  SDR
+  CLOSER
+}
+
+// ═══════════════════════════════════════════
+// LEADS E QUALIFICAÇÃO
+// ═══════════════════════════════════════════
+
+model Lead {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Dados básicos
+  name           String
+  email          String?
+  phone          String?
+  company        String
+  jobTitle       String?
+  website        String?
+  linkedinUrl    String?
+  instagramUrl   String?
+  googleMapsUrl  String?
+
+  // Dados de qualificação
+  source         LeadSource   @default(MANUAL)
+  status         LeadStatus   @default(NEW)
+  score          Int          @default(0)
+
+  // Dados firmográficos e tecnográficos (JSON flexível)
+  firmographics  Json?
+  technographics Json?
+
+  // Análise de redes sociais pela IA
+  socialAnalysis Json?
+
+  // Análise de atendimento
+  hasWhatsapp       Boolean  @default(false)
+  hasChatbot        Boolean  @default(false)
+  manualAttendance  Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  interactions  Interaction[]
+  enrollments   CampaignLead[]
+  diagnostics   Diagnostic[]
+  proposals     Proposal[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([score])
+  @@index([source])
+}
+
+enum LeadSource {
+  MANUAL
+  GOOGLE_MAPS
+  LINKEDIN
+  INSTAGRAM
+  WEBSITE_SCRAPE
+  CSV_IMPORT
+}
+
+enum LeadStatus {
+  NEW
+  QUALIFYING
+  QUALIFIED
+  APPROACHING
+  RESPONDED
+  INTERESTED
+  MEETING_BOOKED
+  CONVERTED
+  LOST
+  RECYCLED
+}
+
+// ═══════════════════════════════════════════
+// DIAGNÓSTICO DE PRESENÇA ONLINE (IA)
+// ═══════════════════════════════════════════
+
+model Diagnostic {
+  id             String       @id @default(cuid())
+  leadId         String
+  lead           Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  status         DiagnosticStatus @default(PENDING)
+
+  // Análises individuais (preenchidas pela IA)
+  websiteAudit   Json?
+  instagramAudit Json?
+  facebookAudit  Json?
+  googleAudit    Json?
+  whatsappAudit  Json?
+
+  // Resultado consolidado
+  overallScore      Int?
+  opportunities     Json?
+  aiSummary         String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  proposals Proposal[]
+
+  @@index([leadId])
+  @@index([organizationId])
+}
+
+enum DiagnosticStatus {
+  PENDING
+  ANALYZING
+  COMPLETED
+  FAILED
+}
+
+// ═══════════════════════════════════════════
+// PROPOSTA COMERCIAL AUTOMÁTICA
+// ═══════════════════════════════════════════
+
+model Proposal {
+  id             String       @id @default(cuid())
+  leadId         String
+  lead           Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  diagnosticId   String?
+  diagnostic     Diagnostic?  @relation(fields: [diagnosticId], references: [id])
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  title          String
+  status         ProposalStatus @default(DRAFT)
+  content        Json
+
+  pdfUrl         String?
+  sitePreviewUrl String?
+  expiresAt      DateTime?
+
+  sentAt         DateTime?
+  viewedAt       DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([leadId])
+  @@index([organizationId])
+}
+
+enum ProposalStatus {
+  DRAFT
+  READY
+  SENT
+  VIEWED
+  ACCEPTED
+  REJECTED
+}
+
+// ═══════════════════════════════════════════
+// CAMPANHAS E CADÊNCIAS
+// ═══════════════════════════════════════════
+
+model Campaign {
+  id             String       @id @default(cuid())
+  name           String
+  status         CampaignStatus @default(DRAFT)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdById    String
+  createdBy      User         @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  steps CadenceStep[]
+  leads CampaignLead[]
+
+  @@index([organizationId])
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ARCHIVED
+}
+
+model CadenceStep {
+  id         String      @id @default(cuid())
+  campaignId String
+  campaign   Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  order      Int
+  channel    Channel
+  delayDays  Int
+  template   String      @db.Text
+  subject    String?
+
+  createdAt  DateTime    @default(now())
+
+  interactions Interaction[]
+
+  @@unique([campaignId, order])
+  @@index([campaignId])
+}
+
+enum Channel {
+  EMAIL
+  LINKEDIN_VISIT
+  LINKEDIN_CONNECT
+  LINKEDIN_MESSAGE
+  WHATSAPP
+  INSTAGRAM_DM
+}
+
+model CampaignLead {
+  id         String   @id @default(cuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  leadId     String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  currentStep  Int     @default(0)
+  status       EnrollmentStatus @default(ACTIVE)
+  enrolledAt   DateTime @default(now())
+  completedAt  DateTime?
+  nextActionAt DateTime?
+
+  @@unique([campaignId, leadId])
+  @@index([nextActionAt])
+  @@index([status])
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  PAUSED
+  REPLIED
+  COMPLETED
+  BOUNCED
+  OPTED_OUT
+}
+
+// ═══════════════════════════════════════════
+// INTERAÇÕES E TRACKING
+// ═══════════════════════════════════════════
+
+model Interaction {
+  id           String      @id @default(cuid())
+  leadId       String
+  lead         Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  stepId       String?
+  step         CadenceStep? @relation(fields: [stepId], references: [id])
+  performedById String?
+  performedBy  User?       @relation(fields: [performedById], references: [id])
+
+  type         InteractionType
+  channel      Channel
+  content      String?     @db.Text
+  aiGenerated  Boolean     @default(false)
+
+  sentAt       DateTime?
+  openedAt     DateTime?
+  clickedAt    DateTime?
+  repliedAt    DateTime?
+  bouncedAt    DateTime?
+
+  createdAt    DateTime    @default(now())
+
+  @@index([leadId])
+  @@index([stepId])
+  @@index([type])
+}
+
+enum InteractionType {
+  EMAIL_SENT
+  EMAIL_OPENED
+  EMAIL_CLICKED
+  EMAIL_REPLIED
+  EMAIL_BOUNCED
+  LINKEDIN_VISITED
+  LINKEDIN_CONNECTED
+  LINKEDIN_MESSAGED
+  WHATSAPP_SENT
+  WHATSAPP_REPLIED
+  INSTAGRAM_DM_SENT
+  MEETING_BOOKED
+  NOTE
+}
+
+// ═══════════════════════════════════════════
+// CONTAS DE EMAIL (SMTP/IMAP)
+// ═══════════════════════════════════════════
+
+model EmailAccount {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  email          String
+  provider       EmailProvider
+  smtpHost       String
+  smtpPort       Int          @default(587)
+  imapHost       String?
+  imapPort       Int?
+
+  accessToken    String?      @db.Text
+  refreshToken   String?      @db.Text
+  tokenExpiresAt DateTime?
+
+  dailyLimit     Int          @default(30)
+  sentToday      Int          @default(0)
+  isWarmedUp     Boolean      @default(false)
+  isActive       Boolean      @default(true)
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId])
+}
+
+enum EmailProvider {
+  GOOGLE_WORKSPACE
+  MICROSOFT_365
+  CUSTOM_SMTP
 }
