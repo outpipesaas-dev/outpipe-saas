@@ -2,13 +2,12 @@
 // SaaS B2B de Automação de Prospecção com IA
 
 generator client {
-  provider = "prisma-client"
+  provider = "prisma-client-js"
   output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 // ═══════════════════════════════════════════
@@ -25,10 +24,12 @@ model Organization {
 
   users         User[]
   leads         Lead[]
+  scrapeJobs    ScrapeJob[]
   campaigns     Campaign[]
   emailAccounts EmailAccount[]
   diagnostics   Diagnostic[]
   proposals     Proposal[]
+  outreachDrafts OutreachDraft[]
 }
 
 model User {
@@ -68,6 +69,9 @@ model Lead {
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
+  scrapeJobId    String?
+  scrapeJob      ScrapeJob?   @relation(fields: [scrapeJobId], references: [id])
+
   // Dados básicos
   name           String
   email          String?
@@ -96,6 +100,11 @@ model Lead {
   hasChatbot        Boolean  @default(false)
   manualAttendance  Boolean  @default(false)
 
+  // Scraping metadata
+  searchQuery    String?
+  location       String?
+  rawScrapedData Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -103,11 +112,48 @@ model Lead {
   enrollments   CampaignLead[]
   diagnostics   Diagnostic[]
   proposals     Proposal[]
+  outreachDraft OutreachDraft?
 
   @@index([organizationId])
   @@index([status])
   @@index([score])
   @@index([source])
+  @@index([scrapeJobId])
+}
+
+model ScrapeJob {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  source         LeadSource
+  status         JobStatus    @default(PENDING)
+
+  query          String
+  location       String
+  limit          Int          @default(10)
+
+  leadsFound     Int          @default(0)
+  leadsImported  Int          @default(0)
+  leadsSkipped   Int          @default(0)
+
+  errorLog       String?      @db.Text
+  startedAt      DateTime     @default(now())
+  finishedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  leads          Lead[]
+
+  @@index([organizationId])
+  @@index([status])
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
 }
 
 enum LeadSource {
@@ -373,6 +419,37 @@ model EmailAccount {
   updatedAt      DateTime     @updatedAt
 
   @@index([organizationId])
+}
+
+model OutreachDraft {
+  id             String       @id @default(cuid())
+  leadId         String       @unique
+  lead           Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  subject        String?
+  body           String?      @db.Text
+  editedSubject  String?
+  editedBody     String?      @db.Text
+  followUp       String?      @db.Text
+  
+  lastSentSubject String?
+  lastSentVersion String?     @db.Text
+  status         DraftStatus  @default(GENERATED)
+  
+  sentAt         DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([leadId])
+  @@index([organizationId])
+}
+
+enum DraftStatus {
+  GENERATED
+  EDITED
+  SENT
 }
 
 enum EmailProvider {
