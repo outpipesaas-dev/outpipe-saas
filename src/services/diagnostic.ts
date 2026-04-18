@@ -63,25 +63,23 @@ export class DiagnosticService {
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
       const loadTime = (Date.now() - startTime) / 1000;
 
-      const pageData = await page.evaluate(() => {
-        const html = document.documentElement.innerHTML.toLowerCase();
-        const text = document.body.innerText.toLowerCase();
-        
-        // Content Heuristics
-        const faqKeywords = ['faq', 'frequently asked', 'perguntas frequentes', 'questions', 'how it works'];
-        const hasFaq = faqKeywords.some(kw => html.includes(kw));
-        
-        const serviceKeywords = ['our services', 'what we do', 'nossos serviços', 'specialties'];
-        const hasServiceBlock = serviceKeywords.some(kw => html.includes(kw));
+        const hasTrust = html.includes('testimonial') || html.includes('depoimento') || html.includes('evaluation') || html.includes('google review');
+        const imgCount = document.querySelectorAll('img').length;
+        const hasContactForm = !!document.querySelector('form');
 
-        const scripts = Array.from(document.querySelectorAll('script')).map(s => s.src.toLowerCase());
-        const hasStripe = scripts.some(s => s.includes('stripe')) || html.includes('stripe.com');
-        const hasCheckout = html.includes('checkout') || html.includes('add to cart') || html.includes('carrinho');
-        
-        const hasModernCSS = html.includes('--font') || html.includes('var(');
-        const hasNextJS = html.includes('_next/static');
-
-        return { hasFaq, hasServiceBlock, wordCount: text.split(/\s+/).length, hasStripe, hasCheckout, scripts, hasModernCSS, hasNextJS };
+        return { 
+          hasFaq, 
+          hasServiceBlock, 
+          wordCount: text.split(/\s+/).length, 
+          hasStripe, 
+          hasCheckout, 
+          scripts, 
+          hasModernCSS, 
+          hasNextJS,
+          hasTrust,
+          imgCount,
+          hasContactForm
+        };
       });
 
       // 1. Primary Checks (Selectors)
@@ -178,6 +176,14 @@ export class DiagnosticService {
         }
       });
 
+      // Recalculate Tier based on deep signals
+      try {
+        const { tierEngine } = await import('./tier-engine');
+        await tierEngine.updateLeadTier(leadId);
+      } catch (e) {
+        console.error(`Error in post-diagnostic tiering for ${leadId}:`, e);
+      }
+
       return signals;
 
     } catch (err: any) {
@@ -206,6 +212,15 @@ export class DiagnosticService {
       update: { status: DiagnosticStatus.COMPLETED, websiteAudit: signals, overallScore: 90, aiSummary: "Lead has no website. Prime target for institutional foundation." },
       create: { leadId, organizationId: lead.organizationId, status: DiagnosticStatus.COMPLETED, websiteAudit: signals, overallScore: 90, aiSummary: "Lead has no website. Prime target for institutional foundation." }
     });
+
+    // Recalculate Tier
+    try {
+      const { tierEngine } = await import('./tier-engine');
+      await tierEngine.updateLeadTier(leadId);
+    } catch (e) {
+      console.error(`Error in no-website tiering for ${leadId}:`, e);
+    }
+
     return signals;
   }
 }

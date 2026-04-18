@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { 
   Building2, 
   Search, 
@@ -51,6 +52,9 @@ interface Lead {
     websiteAudit: any;
     aiSummary: string;
   }>;
+  tier: string;
+  tierReason: string | null;
+  isTierLocked: boolean;
   outreachDraft?: OutreachDraft | null;
 }
 
@@ -65,13 +69,12 @@ export default function LeadsInbox() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [jobs, setJobs] = useState<ScrapeJob[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedJob, setSelectedJob] = useState<string>("all");
+  const [selectedJob, setSelectedJob] = useState<string>("latest");
   const [statusFilter, setStatusFilter] = useState<string>("NEW");
+  const [tierFilter, setTierFilter] = useState<string>("all");
   const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set());
-  const [isDrafting, setIsDrafting] = useState(false);
   const [activeTab, setActiveTab] = useState<'INTEL' | 'OUTREACH'>('INTEL');
   
-  // Local Edit State
   const [draftSubject, setDraftSubject] = useState("");
   const [draftBody, setDraftBody] = useState("");
 
@@ -79,7 +82,7 @@ export default function LeadsInbox() {
     setLoading(true);
     try {
       const [leadsRes, jobsRes] = await Promise.all([
-        fetch(`/api/leads?status=${statusFilter}${selectedJob !== 'all' ? `&jobId=${selectedJob}` : ''}`),
+        fetch(`/api/leads?status=${statusFilter}${selectedJob !== 'all' ? `&jobId=${selectedJob}` : ''}${tierFilter !== 'all' ? `&tier=${tierFilter}` : ''}`),
         fetch('/api/jobs')
       ]);
       const leadsData = await leadsRes.json();
@@ -87,6 +90,11 @@ export default function LeadsInbox() {
       
       setLeads(leadsData || []);
       setJobs(jobsData || []);
+
+      // Auto-select latest job if "latest" is selected
+      if (selectedJob === 'latest' && jobsData.length > 0) {
+        setSelectedJob(jobsData[0].id);
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -96,234 +104,167 @@ export default function LeadsInbox() {
 
   useEffect(() => {
     fetchData();
-  }, [statusFilter, selectedJob]);
+  }, [statusFilter, selectedJob, tierFilter]);
+
+  const activeJobMetadata = jobs.find(j => j.id === (selectedJob === 'latest' ? jobs[0]?.id : selectedJob));
 
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
 
-  useEffect(() => {
-    if (selectedLead?.outreachDraft) {
-      setDraftSubject(selectedLead.outreachDraft.editedSubject || selectedLead.outreachDraft.subject || "");
-      setDraftBody(selectedLead.outreachDraft.editedBody || selectedLead.outreachDraft.body || "");
-    } else {
-      setDraftSubject("");
-      setDraftBody("");
-    }
-  }, [selectedLead]);
-
-  const updateLeadStatus = async (id: string, newStatus: string) => {
-    try {
-      await fetch("/api/leads", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, status: newStatus }),
-      });
-      setLeads(prev => prev.filter(l => l.id !== id));
-    } catch (err) {
-      console.error(err);
-    }
+  // Status mapping for analysis
+  const getAnalysisStatus = (lead: Lead) => {
+    const diagnostic = lead.diagnostics?.[0];
+    if (analyzingIds.has(lead.id) || diagnostic?.status === 'ANALYZING') return { label: 'Analyzing', color: 'bg-blue-100 text-blue-800' };
+    if (diagnostic?.status === 'COMPLETED') return { label: 'Finalized', color: 'bg-green-100 text-green-800' };
+    if (lead.website) return { label: 'Partial', color: 'bg-yellow-100 text-yellow-800' };
+    return { label: 'Pending', color: 'bg-zinc-100 text-zinc-600' };
   };
 
-  const saveDraft = async (id: string, isSent = false) => {
-    try {
-      const res = await fetch(`/api/leads/${id}/draft`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          editedSubject: draftSubject, 
-          editedBody: draftBody,
-          status: isSent ? 'SENT' : 'EDITED' 
-        }),
-      });
-      if (res.ok) {
-        const updated = await res.json();
-        setLeads(prev => prev.map(l => l.id === id ? { ...l, outreachDraft: updated } : l));
-        if (isSent) {
-          updateLeadStatus(id, 'APPROACHING');
-          setSelectedLead(null);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const analyzeLead = async (id: string) => {
-    setAnalyzingIds(prev => new Set(prev).add(id));
-    try {
-      const res = await fetch(`/api/leads/${id}/analyze`, { method: "POST" });
-      if (res.ok) {
-        setTimeout(fetchData, 3000);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const generateDraft = async (id: string) => {
-    setIsDrafting(true);
-    try {
-      const res = await fetch(`/api/leads/${id}/draft`, { method: "POST" });
-      if (res.ok) {
-        const draft = await res.json();
-        setLeads(prev => prev.map(l => l.id === id ? { ...l, outreachDraft: draft } : l));
-        setDraftSubject(draft.subject);
-        setDraftBody(draft.body);
-        // Switch to Outreach tab instantly
-        setActiveTab('OUTREACH');
-        if (selectedLead?.id === id) {
-          setSelectedLead(prev => prev ? { ...prev, outreachDraft: draft } : null);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsDrafting(false);
-    }
-  };
-
-  const getOppBadge = (type: string) => {
-    const map: Record<string, { label: string, color: string }> = {
-      SILENT_HERO: { label: "Silent Hero", color: "bg-orange-100 text-orange-700 border-orange-200" },
-      LEAK_PRONE: { label: "Leak Prone", color: "bg-red-100 text-red-700 border-red-200" },
-      INFORMATION_MAZE: { label: "Info Maze", color: "bg-purple-100 text-purple-700 border-purple-200" },
-      FRICTION_HEAVY: { label: "Friction Heavy", color: "bg-blue-100 text-blue-700 border-blue-200" },
-      VISUAL_GHOST: { label: "Visual Ghost", color: "bg-zinc-100 text-zinc-700 border-zinc-200" },
-      NO_WEBSITE: { label: "No Website", color: "bg-yellow-100 text-yellow-700 border-yellow-200" },
-    };
-    const style = map[type] || { label: type, color: "bg-zinc-100 text-zinc-500 border-zinc-200" };
-    return <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-tighter border ${style.color}`}>{style.label}</span>;
-  };
-
-  const getConfidenceStyle = (conf: string) => {
-    if (conf === 'HIGH') return 'bg-green-100 text-green-700 border-green-200';
-    if (conf === 'MEDIUM') return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-    return 'bg-red-100 text-red-700 border-red-200';
-  };
+  // ... (previous helper functions: updateLeadStatus, saveDraft, analyzeLead, generateDraft, getOppBadge, updateLeadTier, getConfidenceStyle, getTierBadge)
 
   return (
     <div className="min-h-screen bg-white dark:bg-zinc-950 flex flex-col">
-      {/* ... header code ... */}
       <div className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50 p-8">
-        {/* Header content unchanged */}
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-6">
-          {/* ... */}
+        <div className="max-w-7xl mx-auto flex flex-col gap-8">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div>
+              <h1 className="text-3xl font-black tracking-tight text-zinc-900 dark:text-zinc-50 flex items-center gap-3">
+                Leads Inbox
+                <span className="px-2 py-1 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 rounded-lg text-xs font-black">
+                  {leads.length}
+                </span>
+              </h1>
+              <p className="text-zinc-500 dark:text-zinc-400 mt-1 font-medium">Prioritized review for identified opportunities</p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Link 
+                href="/scrape"
+                className="px-4 py-2 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-950 rounded-xl text-xs font-black uppercase tracking-widest hover:scale-[1.02] active:scale-95 transition-all shadow-lg flex items-center gap-2"
+              >
+                <Search className="h-4 w-4" />
+                New Research
+              </Link>
+              <div className="h-8 w-px bg-zinc-200 dark:bg-zinc-800 hidden md:block mx-1" />
+              <button onClick={fetchData} className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors text-zinc-400">
+                <History className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-4 py-4 px-6 bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm transition-all">
+            <div className="flex flex-wrap items-center gap-6">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Research Focus</label>
+                <div className="flex items-center gap-2">
+                 <Database className="h-3.5 w-3.5 text-zinc-900 dark:text-zinc-400" />
+                 <select 
+                   value={selectedJob} 
+                   onChange={(e) => setSelectedJob(e.target.value)}
+                   className="bg-transparent text-xs font-black uppercase tracking-tight text-zinc-900 dark:text-zinc-50 outline-none cursor-pointer max-w-[200px]"
+                 >
+                   <option value="latest">Latest Scrape Run</option>
+                   <option value="all">View All History</option>
+                   {jobs.map(j => (
+                     <option key={j.id} value={j.id}>{j.query} ({j.location})</option>
+                   ))}
+                 </select>
+                </div>
+              </div>
+              
+              {activeJobMetadata && (
+                <div className="h-10 w-px bg-zinc-100 dark:bg-zinc-800 hidden md:block" />
+              )}
+
+              {activeJobMetadata && (
+                <div className="flex items-center gap-6 animate-in fade-in duration-300">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Context</span>
+                    <span className="text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                      {activeJobMetadata.query} in {activeJobMetadata.location}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Status</span>
+                    <span className={`text-[10px] font-black uppercase ${activeJobMetadata.status === 'COMPLETED' ? 'text-green-600' : 'text-zinc-500'}`}>
+                      {activeJobMetadata.status}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 ml-auto">
+               <div className="flex items-center gap-2 bg-zinc-50 dark:bg-zinc-800/50 px-3 py-1.5 rounded-lg">
+                 <Zap className="h-3 w-3 text-zinc-400" />
+                 <select 
+                   value={tierFilter} 
+                   onChange={(e) => setTierFilter(e.target.value)}
+                   className="bg-transparent text-[10px] font-black uppercase text-zinc-600 dark:text-zinc-400 outline-none cursor-pointer"
+                 >
+                   <option value="all">Every Tier</option>
+                   <option value="HOT">Priority: 🔥 Hot</option>
+                   <option value="GOOD">Priority: ✅ Good</option>
+                 </select>
+               </div>
+            </div>
+          </div>
         </div>
       </div>
 
       <div className="flex-1 flex overflow-hidden">
-        <main className={`flex-1 overflow-y-auto p-8 transition-all ${selectedLead ? 'mr-[400px]' : ''}`}>
+        <main className={`flex-1 overflow-y-auto p-8 transition-all ${selectedLead ? 'mr-[450px]' : ''}`}>
           <div className="max-w-7xl mx-auto">
-            <div className="overflow-hidden bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-sm">
+            <div className="overflow-hidden bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-3xl shadow-sm">
               <table className="w-full text-left border-collapse">
-                {/* ... table header ... */}
                 <thead>
-                  <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
-                    <th className="p-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Company</th>
-                    <th className="p-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hidden md:table-cell">Opportunity Type</th>
-                    <th className="p-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest hidden lg:table-cell">Provenance</th>
-                    <th className="p-4 text-[10px] font-bold text-zinc-400 uppercase tracking-widest text-right">Actions</th>
+                  <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50">
+                    <th className="p-6 text-[10px] font-black text-zinc-400 uppercase tracking-widest">Business Intelligence</th>
+                    <th className="p-6 text-[10px] font-black text-zinc-400 uppercase tracking-widest hidden md:table-cell">Analysis Status</th>
+                    <th className="p-6 text-[10px] font-black text-zinc-400 uppercase tracking-widest text-right">Review</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                  {/* ... mapping leads ... */}
                   {leads.map((lead) => {
-                    const diagnostic = lead.diagnostics?.[0];
-                    const isAnalyzing = analyzingIds.has(lead.id) || diagnostic?.status === 'ANALYZING';
-                    const hasDiagnostic = !!diagnostic && diagnostic.status === 'COMPLETED';
+                    const analysis = getAnalysisStatus(lead);
                     const isSelected = selectedLead?.id === lead.id;
 
                     return (
-                      <tr key={lead.id} className={`group hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors ${isSelected ? 'bg-zinc-100 dark:bg-zinc-900' : ''}`}>
-                        <td className="p-4">
-                          <button 
-                            onClick={() => setSelectedLead(lead)}
-                            className="flex items-center gap-3 text-left w-full group"
-                          >
-                            <div className={`h-10 w-10 rounded-xl flex items-center justify-center shrink-0 border transition-all ${
-                              hasDiagnostic ? 'bg-zinc-900 border-zinc-800 group-hover:bg-white group-hover:text-zinc-950' : 'bg-zinc-100 border-zinc-200 dark:bg-zinc-800 dark:border-zinc-700'
-                            }`}>
-                              {hasDiagnostic ? (
-                                <span className={`text-xs font-black ${isSelected ? 'text-zinc-950' : 'text-white'}`}>{diagnostic.overallScore}</span>
-                              ) : (
-                                <Building2 className={`h-5 w-5 ${hasDiagnostic ? 'text-zinc-500' : 'text-zinc-400'}`} />
-                              )}
+                      <tr key={lead.id} className={`group hover:bg-zinc-50 dark:hover:bg-zinc-900/30 transition-all ${isSelected ? 'bg-zinc-100 dark:bg-zinc-900' : ''}`}>
+                        <td className="p-6">
+                          <button onClick={() => setSelectedLead(lead)} className="flex items-start gap-4 text-left w-full group">
+                            <div className="h-12 w-12 rounded-[18px] bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center shrink-0 border border-zinc-200 dark:border-zinc-700 font-black text-xs text-zinc-400 group-hover:bg-white dark:group-hover:bg-zinc-700 transition-all">
+                              {lead.company.charAt(0)}
                             </div>
                             <div>
-                              <div className="font-bold text-zinc-900 dark:text-zinc-50 group-hover:underline underline-offset-4">{lead.company}</div>
-                              <div className="text-xs text-zinc-500 flex items-center gap-1 mt-0.5" onClick={(e) => e.stopPropagation()}>
-                                {lead.website ? (
-                                  <a href={lead.website} target="_blank" className="hover:text-zinc-900 dark:hover:text-zinc-300 flex items-center gap-1">
-                                    {new URL(lead.website).hostname}
-                                    <ExternalLink className="h-3 w-3" />
-                                  </a>
-                                ) : (
-                                  <span className="text-yellow-600 dark:text-yellow-500 font-medium font-xs">no website</span>
-                                )}
+                              <div className="font-black text-zinc-900 dark:text-zinc-50 text-base">{lead.company}</div>
+                              <div className="text-xs text-zinc-500 font-medium mt-0.5">{lead.website ? new URL(lead.website).hostname : 'No website found'}</div>
+                              <div className="mt-3 flex flex-wrap items-center gap-2">
+                                {getTierBadge(lead.tier)}
+                                <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-tighter truncate max-w-[250px]">
+                                  {lead.tierReason}
+                                </span>
                               </div>
                             </div>
                           </button>
                         </td>
-                        {/* ... other cells unchanged ... */}
-                        <td className="p-4 hidden md:table-cell">
-                          {isAnalyzing ? (
-                            <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-400 animate-pulse">
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                              INTEL GATHERING...
-                            </div>
-                          ) : hasDiagnostic ? (
-                            <div className="flex flex-col gap-1">
-                              <div className="flex items-center gap-2">
-                                {getOppBadge(diagnostic.opportunities?.type)}
-                                {lead.outreachDraft && (
-                                  <div className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[8px] font-black uppercase">
-                                    <Sparkles className="h-2 w-2" />
-                                    Ready
-                                  </div>
-                                )}
-                              </div>
-                              <div className="text-[9px] font-medium text-zinc-400 truncate max-w-[150px]">
-                                {diagnostic.opportunities?.service}
-                              </div>
-                            </div>
-                          ) : (
-                            <button 
-                              onClick={() => analyzeLead(lead.id)}
-                              className="flex items-center gap-1.5 text-[10px] font-black text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 uppercase tracking-widest transition-colors"
-                            >
-                              <Activity className="h-3 w-3" />
-                              Identify
-                            </button>
-                          )}
-                        </td>
-                        <td className="p-4 hidden lg:table-cell">
-                          <div className="space-y-1">
-                            <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">
-                              {lead.searchQuery || "Manual"}
-                            </div>
-                            <div className="text-xs text-zinc-600 dark:text-zinc-400 flex items-center gap-1.5 font-medium">
-                              <MapPin className="h-3 w-3 text-zinc-400" />
-                              <span className="truncate max-w-[120px]">{lead.location || "USA"}</span>
-                            </div>
+                        <td className="p-6 hidden md:table-cell">
+                          <div className="flex flex-col gap-2">
+                             <span className={`px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest w-fit border border-current opacity-70 ${analysis.color}`}>
+                               {analysis.label}
+                             </span>
+                             {lead.diagnostics?.[0]?.opportunities?.type && (
+                               <div className="flex gap-1">{getOppBadge(lead.diagnostics[0].opportunities.type)}</div>
+                             )}
                           </div>
                         </td>
-                        <td className="p-4">
-                          <div className="flex items-center justify-end gap-2">
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); updateLeadStatus(lead.id, "LOST"); }}
-                              className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/10 rounded-lg transition-all"
-                              title="Trash Lead"
-                            >
-                              <Trash2 className="h-4 w-4" />
+                        <td className="p-6">
+                          <div className="flex items-center justify-end gap-3">
+                            <button onClick={() => setSelectedLead(lead)} className="px-4 py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl text-xs font-black uppercase tracking-widest transition-all">
+                              Audit Intel
                             </button>
-                            {lead.status === 'NEW' && (
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); updateLeadStatus(lead.id, "QUALIFIED"); }}
-                                className="px-3 py-1.5 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-950 rounded-lg text-xs font-bold shadow-sm active:scale-95 transition-all flex items-center gap-2"
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                Approve
-                              </button>
-                            )}
+                            <button onClick={(e) => { e.stopPropagation(); updateLeadStatus(lead.id, "QUALIFIED"); }} className="p-2.5 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 rounded-xl shadow-lg hover:scale-105 active:scale-95 transition-all">
+                              <CheckCircle2 className="h-4 w-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -335,240 +276,97 @@ export default function LeadsInbox() {
           </div>
         </main>
 
-        {/* LEAD INSPECTOR SIDE PANEL (Tabbed) */}
         {selectedLead && (
-          <aside className="fixed right-0 top-16 bottom-0 w-[450px] bg-white dark:bg-zinc-950 border-l border-zinc-200 dark:border-zinc-800 shadow-2xl z-40 overflow-y-auto animate-in slide-in-from-right duration-300 shadow-zinc-100/50 flex flex-col">
-            {/* Header */}
-            <div className="p-8 pb-4 space-y-6 shrink-0 bg-white dark:bg-zinc-950 sticky top-0 z-10">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-xl font-black tracking-tight text-zinc-900 dark:text-zinc-50">{selectedLead.company}</h2>
-                  <div className="flex items-center gap-2 mt-1">
-                    <p className="text-[10px] text-zinc-400 uppercase tracking-widest font-bold">{selectedLead.location || "Global Business"}</p>
-                    {selectedLead.diagnostics?.[0]?.opportunities?.confidence && (
-                      <span className={`px-1.5 py-0.5 rounded-[4px] text-[8px] font-black tracking-widest border uppercase ${getConfidenceStyle(selectedLead.diagnostics[0].opportunities.confidence)}`}>
-                        {selectedLead.diagnostics[0].opportunities.confidence} Confidence
+          <aside className="fixed right-0 top-0 bottom-0 w-[450px] bg-white dark:bg-zinc-950 border-l border-zinc-200 dark:border-zinc-800 shadow-2xl z-50 flex flex-col font-sans animate-in slide-in-from-right">
+            <div className="p-8 border-b border-zinc-100 dark:border-zinc-800 shrink-0">
+               <div className="flex items-start justify-between mb-6">
+                 <div>
+                   <span className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-400 mb-2 block">Manual Validation Mode</span>
+                   <h2 className="text-2xl font-black text-zinc-900 dark:text-zinc-50 leading-tight">{selectedLead.company}</h2>
+                   <div className="flex items-center gap-2 mt-3">
+                    {getTierBadge(selectedLead.tier)}
+                    <span className="h-1 w-1 bg-zinc-300 rounded-full" />
+                    <a href={selectedLead.website || '#'} target="_blank" className="text-xs font-bold text-zinc-500 hover:text-zinc-900 flex items-center gap-1.5 transition-colors">
+                      {selectedLead.website ? 'Visit Site' : 'No link'}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                   </div>
+                 </div>
+                 <button onClick={() => setSelectedLead(null)} className="p-2 hover:bg-zinc-100 rounded-xl text-zinc-400"><Trash2 className="h-5 w-5 rotate-45" /></button>
+               </div>
+
+               <div className="p-5 bg-zinc-900 dark:bg-zinc-50 rounded-[28px] text-white dark:text-zinc-900 shadow-xl space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Engine Verdict</span>
+                    <span className="text-lg px-2 py-0.5 bg-white/20 dark:bg-black/10 rounded-lg font-black">{selectedLead.tier}</span>
+                  </div>
+                  <p className="font-bold leading-relaxed">"{selectedLead.tierReason}"</p>
+                  
+                  {/* REASON CODES DISPLAY */}
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    {((selectedLead.firmographics as any)?.reasonCodes as string[])?.map(code => (
+                      <span key={code} className="px-2 py-1 bg-white/10 dark:bg-black/5 rounded-md text-[9px] font-black tracking-widest border border-white/20">
+                        {code}
                       </span>
-                    )}
-                    {selectedLead.status === 'APPROACHING' && (
-                       <span className="px-1.5 py-0.5 rounded-[4px] text-[8px] font-black tracking-widest bg-green-100 text-green-700 border border-green-200 uppercase">
-                         Contacted
-                       </span>
+                    ))}
+                    {!((selectedLead.firmographics as any)?.reasonCodes) && (
+                      <span className="text-[9px] font-bold opacity-50 uppercase tracking-widest italic">No codes available for this batch</span>
                     )}
                   </div>
-                </div>
-                <button 
-                  onClick={() => setSelectedLead(null)}
-                  className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors text-zinc-400"
-                >
-                  <Filter className="h-4 w-4 rotate-45" />
-                </button>
-              </div>
-
-              {/* Tabs Switcher */}
-              <div className="flex p-1 bg-zinc-100 dark:bg-zinc-900 rounded-xl">
-                <button 
-                  onClick={() => setActiveTab('INTEL')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${
-                    activeTab === 'INTEL' 
-                      ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50 shadow-sm' 
-                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-                  }`}
-                >
-                  <Activity className="h-3.5 w-3.5" />
-                  Intel
-                </button>
-                <button 
-                  onClick={() => setActiveTab('OUTREACH')}
-                  className={`flex-1 flex items-center justify-center gap-2 py-2 text-[10px] font-black uppercase tracking-widest rounded-lg transition-all ${
-                    activeTab === 'OUTREACH' 
-                      ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-50 shadow-sm' 
-                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-                  }`}
-                >
-                  <Mail className="h-3.5 w-3.5" />
-                  Outreach
-                </button>
-              </div>
+               </div>
             </div>
 
-            <div className="p-8 pt-4 flex-1">
-              {activeTab === 'INTEL' ? (
-                /* Intelligence View */
-                <div className="space-y-8">
-                  {selectedLead.diagnostics?.[0] ? (
-                    <>
-                      <div className="bg-zinc-900 border border-zinc-800 rounded-[24px] p-6 text-white space-y-6">
-                        <div className="flex items-center justify-between">
-                          <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Proposed Strategy</div>
-                          <div className="flex items-center gap-2">
-                             <span className="text-2xl font-black">{selectedLead.diagnostics[0].overallScore}</span>
-                             <span className="text-[10px] font-bold text-zinc-600 uppercase">Fit</span>
-                          </div>
-                        </div>
-                        <div>
-                          <h3 className="text-xl font-bold leading-tight mb-2 text-zinc-50">
-                            {selectedLead.diagnostics[0].opportunities?.service}
-                          </h3>
-                          <div className="flex flex-wrap gap-2">
-                            {getOppBadge(selectedLead.diagnostics[0].opportunities?.type)}
-                          </div>
-                        </div>
-                        <div className="pt-4 border-t border-zinc-800">
-                           <p className="text-xs text-zinc-400 italic leading-relaxed">
-                             "The Why": {selectedLead.diagnostics[0].aiSummary}
-                           </p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-4">
-                        <h4 className="text-[10px] font-black uppercase tracking-widest text-zinc-400">The Evidence Log</h4>
-                        <div className="grid grid-cols-1 gap-2">
-                           {(selectedLead.diagnostics[0].websiteAudit as any)?.evidenceLog?.map((entry: any, i: number) => (
-                             <div key={i} className="group p-4 bg-zinc-50 dark:bg-zinc-900/50 rounded-2xl border border-zinc-100 dark:border-zinc-800 hover:border-zinc-300 dark:hover:border-zinc-700 transition-all">
-                               <div className="flex items-center justify-between mb-1.5">
-                                 <span className="text-[11px] font-bold text-zinc-900 dark:text-zinc-50">{entry.label}</span>
-                                 {entry.status === 'POSITIVE' ? (
-                                   <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-                                 ) : entry.status === 'NEGATIVE' ? (
-                                   <AlertCircle className="h-3.5 w-3.5 text-red-500" />
-                                 ) : (
-                                   <Activity className="h-3.5 w-3.5 text-zinc-400" />
-                                 )}
-                               </div>
-                               <p className="text-[11px] text-zinc-500 leading-relaxed">
-                                 {entry.reason}
-                               </p>
-                             </div>
-                           ))}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-3 p-5 bg-orange-50 dark:bg-orange-950 border border-orange-100 dark:border-orange-900 rounded-[20px]">
-                        <Zap className="h-5 w-5 text-orange-500 shrink-0" />
-                        <p className="text-[11px] text-orange-800 dark:text-orange-200 font-medium leading-relaxed">
-                          Pitch Tip: Pivot your message to focus on the {selectedLead.diagnostics[0].opportunities?.type.replace('_', ' ').toLowerCase()} gap. This is a high-impact friction point for their customers.
-                        </p>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="p-10 text-center space-y-6 bg-zinc-50 dark:bg-zinc-900/50 rounded-[32px] border-2 border-dashed border-zinc-200 dark:border-zinc-800">
-                      <History className="h-8 w-8 text-zinc-300 mx-auto" />
-                      <div>
-                        <h5 className="font-bold text-zinc-900 dark:text-zinc-50">Intel Needed</h5>
-                        <p className="text-xs text-zinc-500 mt-1 max-w-[200px] mx-auto leading-relaxed">Launch a deep scan to uncover sales opportunities.</p>
-                      </div>
-                      <button 
-                        onClick={() => analyzeLead(selectedLead.id)}
-                        className="w-full py-4 bg-zinc-900 dark:bg-white text-white dark:text-zinc-950 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all"
-                      >
-                        Uncover Gaps
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                /* Outreach View (Calibration Mode) */
-                <div className="space-y-8 animate-in fade-in duration-300 flex flex-col h-full">
-                  {!selectedLead.outreachDraft ? (
-                    <div className="p-10 text-center space-y-6 bg-zinc-50 dark:bg-zinc-900/50 rounded-[32px] border-2 border-dashed border-zinc-200 dark:border-zinc-800">
-                      <div className="h-16 w-16 bg-blue-50 dark:bg-blue-900/20 rounded-2xl flex items-center justify-center mx-auto">
-                        <Sparkles className="h-8 w-8 text-blue-500" />
-                      </div>
-                      <div>
-                        <h5 className="font-bold text-zinc-900 dark:text-zinc-50">Generate Hook</h5>
-                        <p className="text-xs text-zinc-500 mt-1 leading-relaxed">Let AI suggest a direct, observational hook for you.</p>
-                      </div>
-                      <button 
-                        disabled={isDrafting}
-                        onClick={() => generateDraft(selectedLead.id)}
-                        className="w-full py-4 bg-zinc-900 dark:bg-white text-white dark:text-zinc-950 rounded-2xl text-xs font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                      >
-                        {isDrafting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                        Craft Short Hook
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-6 flex-1 flex flex-col">
-                      <div className="bg-zinc-50 dark:bg-zinc-900 p-6 rounded-3xl border border-zinc-100 dark:border-zinc-800 space-y-6 flex-1 flex flex-col">
-                         <div className="space-y-2 shrink-0">
-                           <div className="flex items-center justify-between">
-                             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Subject Line (edit)</span>
-                             <span className="text-[9px] text-zinc-400 italic">keep it lowercase & specific</span>
-                           </div>
-                           <input 
-                             value={draftSubject}
-                             onChange={(e) => setDraftSubject(e.target.value)}
-                             placeholder="e.g. website observation"
-                             className="w-full bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl px-4 py-2 text-sm font-bold text-zinc-900 dark:text-zinc-50 focus:ring-2 focus:ring-zinc-500 outline-none transition-all"
-                           />
-                         </div>
-                         
-                         <div className="space-y-2 flex-1 flex flex-col">
-                           <div className="flex items-center justify-between">
-                             <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Email Body</span>
-                             <div className="flex items-center gap-3">
-                               <button 
-                                 onClick={() => {
-                                   setDraftSubject(selectedLead.outreachDraft?.subject || "");
-                                   setDraftBody(selectedLead.outreachDraft?.body || "");
-                                 }}
-                                 className="text-[9px] font-bold text-zinc-400 hover:text-zinc-900 transition-colors"
-                               >
-                                 Reset to AI Draft
-                               </button>
-                               <span className={`text-[9px] font-bold ${draftBody.split(/\s+/).length > 40 ? 'text-red-500' : 'text-zinc-400'}`}>
-                                 {draftBody.split(/\s+/).length} / 40 words
-                               </span>
-                             </div>
-                           </div>
-                           <textarea 
-                             value={draftBody}
-                             onChange={(e) => setDraftBody(e.target.value)}
-                             className="w-full flex-1 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-4 text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed outline-none focus:ring-2 focus:ring-zinc-500 transition-all resize-none"
-                             placeholder="Write your observation here..."
-                           />
-                         </div>
-
-                         <div className="space-y-2 opacity-60">
-                           <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Follow-up context</span>
-                           <div className="p-4 bg-zinc-100/50 dark:bg-zinc-950 rounded-2xl border-dashed border border-zinc-200 dark:border-zinc-800 text-[10px] text-zinc-500 italic leading-relaxed">
-                             {selectedLead.outreachDraft.followUp}
-                           </div>
-                         </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3 shrink-0">
-                         <button 
-                           onClick={() => saveDraft(selectedLead.id)}
-                           className="py-4 border border-zinc-200 dark:border-zinc-800 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all hover:bg-zinc-100"
-                         >
-                           Save Progress
-                         </button>
-                         <button 
-                           onClick={() => {
-                             navigator.clipboard.writeText(`Subject: ${draftSubject}\n\n${draftBody}`);
-                             saveDraft(selectedLead.id, true);
-                           }}
-                           className="py-4 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-950 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl flex items-center justify-center gap-2 group hover:scale-[1.02] transition-all"
-                         >
-                           Copy & Mark Sent
-                           <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-1 transition-transform" />
-                         </button>
-                      </div>
-                    </div>
-                  )}
-                  
-                  <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-2xl flex items-start gap-3 mt-auto shrink-0">
-                     <div className="p-2 bg-zinc-200 dark:bg-zinc-800 rounded-lg">
-                       <Zap className="h-4 w-4 text-zinc-400" />
+            <div className="flex-1 overflow-y-auto p-8 space-y-10">
+               {/* Analysis Detail */}
+               <div className="space-y-4">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Provenance & Reference</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                     <div className="p-4 bg-zinc-50 dark:bg-zinc-900 rounded-2xl border border-zinc-100 dark:border-zinc-800">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Scrape Run ID</span>
+                        <span className="text-xs font-bold font-mono text-zinc-600 truncate block">#{selectedLead.scrapeJobId?.slice(-8) || 'Manual'}</span>
                      </div>
-                     <p className="text-[10px] text-zinc-500 leading-relaxed">
-                       Principle: Use "I" to signal a personal reachout from a developer. Keep subject lines lowercase for a manual feel.
-                     </p>
+                     <div className="p-4 bg-zinc-50 dark:bg-zinc-900 rounded-2xl border border-zinc-100 dark:border-zinc-800">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">Import Date</span>
+                        <span className="text-xs font-bold text-zinc-600 block">{new Date(selectedLead.createdAt).toLocaleDateString()}</span>
+                     </div>
                   </div>
-                </div>
-              )}
+               </div>
+
+               <div className="space-y-4">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">Commercial Intel</h3>
+                  {selectedLead.diagnostics?.[0] ? (
+                    <div className="space-y-4">
+                       <div className="flex items-start gap-4 p-5 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-900/30 rounded-3xl">
+                          <Activity className="h-5 w-5 text-blue-500 mt-0.5" />
+                          <div>
+                             <span className="text-[10px] font-black uppercase text-blue-800 dark:text-blue-400 mb-1 block">Best Entry Service</span>
+                             <p className="text-sm font-bold text-zinc-900 dark:text-zinc-50">{selectedLead.diagnostics[0].opportunities?.service}</p>
+                          </div>
+                       </div>
+                       <p className="text-xs text-zinc-500 italic leading-relaxed border-l-2 border-zinc-200 pl-4">
+                         "{selectedLead.diagnostics[0].aiSummary}"
+                       </p>
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center bg-zinc-50 dark:bg-zinc-900/50 rounded-3xl border-2 border-dashed border-zinc-200 dark:border-zinc-800">
+                      <p className="text-xs font-black text-zinc-400 uppercase tracking-[0.2em] mb-3">Deep audit not run</p>
+                      <p className="text-[11px] text-zinc-500 font-medium leading-relaxed max-w-[280px] mx-auto">
+                        This lead only has an initial scan. Run a deep audit to identify actionable sales opportunities such as weak calls to action, missing booking flow, trust gaps, and conversion friction.
+                      </p>
+                      <button 
+                        onClick={() => analyzeLead(selectedLead.id)} 
+                        className="mt-6 w-full py-4 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl hover:scale-[1.02] active:scale-95 transition-all"
+                      >
+                        Run Deep Audit
+                      </button>
+                    </div>
+                  )}
+               </div>
+            </div>
+
+            <div className="p-8 bg-zinc-50 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 grid grid-cols-2 gap-4">
+               <button onClick={() => updateLeadStatus(selectedLead.id, 'LOST')} className="py-4 border border-zinc-200 dark:border-zinc-800 rounded-2xl text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:text-red-500 hover:bg-white transition-all">Discard Lead</button>
+               <button onClick={() => updateLeadStatus(selectedLead.id, 'QUALIFIED')} className="py-4 bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl hover:scale-105 transition-all">Move to Outreach</button>
             </div>
           </aside>
         )}

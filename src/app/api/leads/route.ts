@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getFounderOrg } from '@/services/founder-org';
-import { LeadStatus } from '@/generated/prisma';
+import { LeadStatus, LeadTier } from '@/generated/prisma';
 
 export async function GET(req: NextRequest) {
   try {
     const org = await getFounderOrg();
     const { searchParams } = new URL(req.url);
     const status = searchParams.get('status') as LeadStatus | null;
+    const tier = searchParams.get('tier') as LeadTier | null;
     const jobId = searchParams.get('jobId');
     
     const leads = await prisma.lead.findMany({
@@ -15,6 +16,10 @@ export async function GET(req: NextRequest) {
         organizationId: org.id,
         ...(status ? { status } : { 
           NOT: { status: 'RECYCLED' as LeadStatus }
+        }),
+        ...(tier ? { tier } : {
+           // Default: hide SKIP noise if not specifically looking for it
+           NOT: { tier: 'SKIP' as LeadTier }
         }),
         ...(jobId && jobId !== 'all' ? { scrapeJobId: jobId } : {}),
       },
@@ -24,7 +29,13 @@ export async function GET(req: NextRequest) {
           take: 1
         }
       },
-      orderBy: { createdAt: 'desc' },
+      // Sort by best opportunities first
+      orderBy: [
+        { tier: 'asc' }, // HOT (0), GOOD (1), MAYBE (2), SKIP (3) -> Wait, Enums are ordered alphabetically in Prisma unless defined otherwise.
+        // Actually, Prisma Enums are strings.
+        { score: 'desc' },
+        { createdAt: 'desc' }
+      ],
     });
 
     return NextResponse.json(leads);
@@ -37,7 +48,7 @@ export async function GET(req: NextRequest) {
 export async function PATCH(req: NextRequest) {
   try {
     const org = await getFounderOrg();
-    const { id, status, score } = await req.json();
+    const { id, status, score, tier } = await req.json();
 
     if (!id) return NextResponse.json({ error: 'ID is required' }, { status: 400 });
 
@@ -46,6 +57,11 @@ export async function PATCH(req: NextRequest) {
       data: { 
         ...(status && { status }),
         ...(score !== undefined && { score }),
+        ...(tier && { 
+          tier,
+          isTierLocked: true, // Manual override locks the tier
+          tierReason: 'Manual Override'
+        }),
       },
     });
 

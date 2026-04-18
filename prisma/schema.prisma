@@ -87,6 +87,9 @@ model Lead {
   source         LeadSource   @default(MANUAL)
   status         LeadStatus   @default(NEW)
   score          Int          @default(0)
+  tier           LeadTier     @default(MAYBE)
+  tierReason     String?
+  isTierLocked   Boolean      @default(false)
 
   // Dados firmográficos e tecnográficos (JSON flexível)
   firmographics  Json?
@@ -117,6 +120,7 @@ model Lead {
   @@index([organizationId])
   @@index([status])
   @@index([score])
+  @@index([tier])
   @@index([source])
   @@index([scrapeJobId])
 }
@@ -176,6 +180,13 @@ enum LeadStatus {
   CONVERTED
   LOST
   RECYCLED
+}
+
+enum LeadTier {
+  HOT
+  GOOD
+  MAYBE
+  SKIP
 }
 
 // ═══════════════════════════════════════════

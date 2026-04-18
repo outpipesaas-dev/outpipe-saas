@@ -7,11 +7,30 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { query, location, maxResults } = body;
+    let { query, location, maxResults } = body;
+
+    // --- NORMALIZATION & ROBUSTNESS ---
+    const normalize = (val: string) => {
+      if (!val) return "";
+      return val
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, ' ') // collapse multiple spaces
+        .replace(/[;&%]/g, ''); // sanitize potentially dangerous chars while leaving slashes/commas for compound queries
+    };
+
+    query = normalize(query);
+    location = normalize(location);
 
     if (!query || !location) {
-      return Response.json({ error: 'Missing required fields' }, { status: 400 });
+      console.error('[Scraper API] Validation failed: Query or Location is missing or empty after normalization.');
+      return Response.json({ 
+        error: 'Incomplete Search Criteria',
+        details: 'Both Niche/Industry and Location are required. Please avoid using only special characters.' 
+      }, { status: 400 });
     }
+
+    console.log(`[Scraper API] Starting Job: "${query}" in "${location}" (max: ${maxResults})`);
 
     const org = await getFounderOrg();
 

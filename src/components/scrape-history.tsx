@@ -9,7 +9,8 @@ import {
   Loader2, 
   Hash,
   ArrowRight,
-  Database
+  Database,
+  AlertCircle
 } from "lucide-react";
 
 interface ScrapeJob {
@@ -20,21 +21,26 @@ interface ScrapeJob {
   leadsFound: number;
   leadsImported: number;
   leadsSkipped: number;
+  errorLog: string | null;
   createdAt: string;
   finishedAt: string | null;
 }
 
-export default function ScrapeHistory() {
+export default function ScrapeHistory({ refreshTrigger = 0 }: { refreshTrigger?: number }) {
   const [jobs, setJobs] = useState<ScrapeJob[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchJobs = async () => {
     try {
       const response = await fetch('/api/jobs');
+      if (!response.ok) throw new Error("Failed to fetch history");
       const data = await response.json();
       setJobs(data);
-    } catch (err) {
+      setError(null);
+    } catch (err: any) {
       console.error(err);
+      setError(err.message);
     } finally {
       setLoading(false);
     }
@@ -42,12 +48,32 @@ export default function ScrapeHistory() {
 
   useEffect(() => {
     fetchJobs();
-    const interval = setInterval(fetchJobs, 5000); // Polling every 5s while page is open
+    const interval = setInterval(fetchJobs, 5000); 
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshTrigger]);
 
   if (loading && jobs.length === 0) {
-    return <div className="p-8 text-center text-zinc-500 italic">Loading run history...</div>;
+    return (
+      <div className="p-12 text-center animate-pulse">
+        <Loader2 className="h-6 w-6 text-zinc-300 mx-auto animate-spin mb-4" />
+        <p className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Synchronizing History...</p>
+      </div>
+    );
+  }
+
+  if (error && jobs.length === 0) {
+    return (
+      <div className="p-8 text-center bg-red-50 dark:bg-red-900/10 rounded-2xl border border-red-100 dark:border-red-900/30">
+        <AlertCircle className="mx-auto h-6 w-6 text-red-500 mb-2" />
+        <p className="text-sm font-bold text-red-700 dark:text-red-400">Unable to load history</p>
+        <button 
+          onClick={() => { setLoading(true); fetchJobs(); }}
+          className="mt-4 text-xs font-black uppercase text-red-600 dark:text-red-500 underline"
+        >
+          Retry Connection
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -105,9 +131,16 @@ export default function ScrapeHistory() {
                     DONE
                   </div>
                 ) : job.status === "FAILED" ? (
-                  <div className="px-2 py-1 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg text-[10px] font-bold flex items-center gap-1">
-                    <XCircle className="h-2.5 w-2.5" />
-                    FAILED
+                  <div className="flex flex-col items-end gap-1">
+                    <div className="px-2 py-1 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg text-[10px] font-bold flex items-center gap-1">
+                      <XCircle className="h-2.5 w-2.5" />
+                      FAILED
+                    </div>
+                    {job.errorLog && (
+                      <span className="text-[10px] text-red-400 font-medium max-w-[150px] truncate text-right">
+                        {job.errorLog}
+                      </span>
+                    )}
                   </div>
                 ) : (
                   <div className="px-2 py-1 bg-zinc-100 dark:bg-zinc-800 text-zinc-400 rounded-lg text-[10px] font-bold">
